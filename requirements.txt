@@ -9,3 +9,6 @@ python-dotenv
 python-multipart
 pydantic[email]
 apscheduler
+google-generativeai
+python-multipart
+pillow

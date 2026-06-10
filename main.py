@@ -170,6 +170,12 @@ from routes.auth import router as auth_router, language_router, users_router
 from routes.location import router as location_router
 from routes.onboarding import router as onboarding_router
 from routes.feed import router as feed_router
+from routes.post import router as post_router
+from fastapi.staticfiles import StaticFiles
+
+import os
+os.makedirs("static/post_images", exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.include_router(auth_router, prefix="/api/auth")
 app.include_router(location_router, prefix="/api/location")
@@ -177,7 +183,7 @@ app.include_router(onboarding_router, prefix="/api/onboarding")
 app.include_router(users_router, prefix="/api/users")
 app.include_router(language_router, prefix="/api")
 app.include_router(feed_router, prefix="/api/feed")
-
+app.include_router(post_router, prefix="/api/posts")
 
 @app.get("/health")
 def health_check():
