@@ -1,9 +1,8 @@
 from fastapi import Depends, HTTPException, Header
 from utils.jwt import decode_token
-from database import get_db
 
 
-async def get_current_user(authorization: str = Header(...), db=Depends(get_db)):
+async def get_current_user(authorization: str = Header(...)):
     """
     Dependency that validates a Bearer access token from the Authorization header
     and returns the authenticated user_id string.

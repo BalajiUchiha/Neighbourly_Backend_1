@@ -1,32 +1,38 @@
+import psycopg2
+from psycopg2 import pool
 import os
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
 
-# DATABASE_URL is loaded from environment variables
-DATABASE_URL = os.getenv("DATABASE_URL")
+load_dotenv()
 
-# Set up engine and sessionmaker safely in case DATABASE_URL is not configured yet
-if DATABASE_URL:
-    engine = create_engine(
-        DATABASE_URL,
-        pool_pre_ping=True,    # re-validates connections before use (handles Supabase/PgBouncer drops)
-        pool_recycle=300,      # recycle connections every 5 min
-        connect_args={"connect_timeout": 10},
-    )
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-else:
-    engine = None
-    SessionLocal = None
-
-Base = declarative_base()
+connection_pool = psycopg2.pool.SimpleConnectionPool(
+    minconn=1,
+    maxconn=10,
+    dsn=os.getenv("DATABASE_URL")
+)
 
 def get_db():
-    """Dependency helper to get a database session."""
-    if SessionLocal is None:
-        raise ValueError("DATABASE_URL is not configured in backend/.env")
-    db = SessionLocal()
+    conn = connection_pool.getconn()
     try:
-        yield db
+        yield conn
     finally:
-        db.close()
+        connection_pool.putconn(conn)
+
+def execute_query(conn, query: str, params=None, fetch=None):
+    with conn.cursor() as cur:
+        cur.execute(query, params or ())
+        if fetch == "one":
+            row = cur.fetchone()
+            if row and cur.description:
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row))
+            return None
+        elif fetch == "all":
+            rows = cur.fetchall()
+            if rows and cur.description:
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in rows]
+            return []
+        else:
+            conn.commit()
+            return None

@@ -1,331 +1,364 @@
-from math import radians, cos, sqrt
+from database import execute_query
+from math import cos, radians, sqrt
 from datetime import datetime
-from typing import Optional
-from sqlalchemy.orm import Session
-
-from models.post import Post, PostImage
-from models.application import Application
-from models.rating import Rating
-from models.user import User
-from models.worker import WorkerProfile
-
-
-# ---------------------------------------------------------------------------
-# Geo helpers
-# ---------------------------------------------------------------------------
-
-def get_bounding_box(lat: float, lng: float, radius_km: float):
-    """Return (min_lat, max_lat, min_lng, max_lng) for a square bounding box."""
-    delta_lat = radius_km / 111.0
-    delta_lng = radius_km / (111.0 * abs(cos(radians(lat))))
-    min_lat = lat - delta_lat
-    max_lat = lat + delta_lat
-    min_lng = lng - delta_lng
-    max_lng = lng + delta_lng
-    return min_lat, max_lat, min_lng, max_lng
-
-
-def calculate_distance_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
-    """Flat-earth approximation — good enough for hyperlocal distances."""
-    dlat = (lat2 - lat1) * 111.0
-    dlng = (lng2 - lng1) * 111.0 * abs(cos(radians(lat1)))
-    return round(sqrt(dlat ** 2 + dlng ** 2), 1)
-
-
-# ---------------------------------------------------------------------------
-# Urgency ordering helper
-# ---------------------------------------------------------------------------
-URGENCY_ORDER = {"today": 0, "tomorrow": 1, "this_week": 2, "flexible": 3}
-
-
-def urgency_sort_key(post: Post) -> int:
-    return URGENCY_ORDER.get(post.urgency_tag or "flexible", 3)
-
-
-# ---------------------------------------------------------------------------
-# FeedService
-# ---------------------------------------------------------------------------
 
 class FeedService:
-    """Core feed retrieval and enrichment logic."""
 
-    # ------------------------------------------------------------------
-    # Public: get_feed
-    # ------------------------------------------------------------------
-    def get_feed(
-        self,
-        db: Session,
-        current_user_id: str,
-        filter_name: str = "all",
-        radius_km: float = 15.0,
-    ) -> dict:
-        user: Optional[User] = db.query(User).filter(User.id == current_user_id).first()
-        if not user:
-            return {"posts": [], "total": 0, "radius_km": radius_km, "filter": filter_name}
+    @staticmethod
+    def calculate_distance_km(lat1, lng1, lat2, lng2):
+        dlat = (float(lat2) - float(lat1)) * 111.0
+        dlng = (float(lng2) - float(lng1)) * 111.0 * abs(cos(radians(float(lat1))))
+        return round(sqrt(dlat**2 + dlng**2), 1)
 
-        # Parse GPS coords
-        lat = self._parse_float(user.latitude)
-        lng = self._parse_float(user.longitude)
-        has_gps = lat is not None and lng is not None
-
-        # Fallback: no location at all
-        if not has_gps and not user.district:
-            return {
-                "posts": [],
-                "total": 0,
-                "radius_km": radius_km,
-                "filter": filter_name,
-                "message": "No location data found. Please update your location.",
-            }
-
-        # Build base query
-        query = (
-            db.query(Post)
-            .filter(Post.status == "open")
-            .filter(Post.poster_id != current_user_id)
-        )
-
-        if has_gps:
-            min_lat, max_lat, min_lng, max_lng = get_bounding_box(lat, lng, radius_km)
-            # Fetch candidates with non-null coordinates then filter in Python
-            # (avoids dialect-specific float casting for string lat/lng columns)
-            posts_raw = query.filter(
-                Post.latitude.isnot(None),
-                Post.longitude.isnot(None),
-            ).all()
-            posts_raw = [
-                p for p in posts_raw
-                if (plat := self._parse_float(p.latitude)) is not None
-                and (plng := self._parse_float(p.longitude)) is not None
-                and min_lat <= plat <= max_lat
-                and min_lng <= plng <= max_lng
-            ]
-        else:
-            # District-only filter
-            query = query.filter(Post.district == user.district)
-            posts_raw = query.all()
-
-        # Apply per-filter logic
-        posts_raw = self._apply_filter(
-            posts_raw, filter_name, user, db, has_gps, current_user_id
-        )
-
-        # Limit
-        posts_raw = posts_raw[:20]
-
-        # Enrich
-        enriched = [
-            self._enrich_post(p, db, user_id=current_user_id, user_lat=lat, user_lng=lng, is_own=False)
-            for p in posts_raw
-        ]
-
+    @staticmethod
+    def get_bounding_box(lat, lng, radius_km):
+        delta_lat = radius_km / 111.0
+        delta_lng = radius_km / (111.0 * abs(cos(radians(float(lat)))))
         return {
-            "posts": enriched,
-            "total": len(enriched),
-            "radius_km": radius_km,
-            "filter": filter_name,
+            "min_lat": float(lat) - delta_lat,
+            "max_lat": float(lat) + delta_lat,
+            "min_lng": float(lng) - delta_lng,
+            "max_lng": float(lng) + delta_lng
         }
 
-    # ------------------------------------------------------------------
-    # Public: get_active_post
-    # ------------------------------------------------------------------
-    def get_active_post(self, db: Session, current_user_id: str) -> Optional[dict]:
-        post: Optional[Post] = (
-            db.query(Post)
-            .filter(Post.poster_id == current_user_id, Post.status == "open")
-            .order_by(Post.created_at.desc())
-            .first()
+    @staticmethod
+    async def get_feed(filter, radius_km, current_user_id, db):
+
+        # Get current user
+        user = execute_query(
+            db,
+            "SELECT * FROM users WHERE id = %s",
+            (current_user_id,),
+            fetch="one"
         )
-        if not post:
-            return None
+        if not user:
+            return {"posts": [], "total": 0}
 
-        enriched = self._enrich_post(post, db, user_id=current_user_id, user_lat=None, user_lng=None, is_own=True)
+        # Build base WHERE conditions
+        base_conditions = """
+            p.status = 'open'
+            AND p.poster_id != %s
+        """
+        base_params = [current_user_id]
 
-        # Suggested workers: same district, is_worker=true, order by trust_score desc, limit 5
-        suggested = []
-        if post.district:
-            workers = (
-                db.query(User)
-                .join(WorkerProfile, WorkerProfile.user_id == User.id)
-                .filter(User.district == post.district, User.is_worker == True)
-                .order_by(User.trust_score.desc())
-                .limit(5)
-                .all()
+        # Location filter
+        if user["latitude"] and user["longitude"]:
+            box = FeedService.get_bounding_box(
+                user["latitude"], user["longitude"], radius_km
             )
-            suggested = [
-                {
-                    "id": str(w.id),
-                    "name": w.name,
-                    "username": w.username,
-                    "photo_url": w.photo_url,
-                    "trust_score": w.trust_score,
-                    "trust_badge": w.trust_badge,
-                    "district": w.district,
-                }
-                for w in workers
+            base_conditions += """
+                AND p.latitude BETWEEN %s AND %s
+                AND p.longitude BETWEEN %s AND %s
+            """
+            base_params += [
+                box["min_lat"], box["max_lat"],
+                box["min_lng"], box["max_lng"]
             ]
+        elif user["district"]:
+            base_conditions += " AND p.district = %s"
+            base_params.append(user["district"])
 
-        enriched["suggested_workers"] = suggested
+        # Filter specific conditions
+        filter_conditions = ""
+        filter_params = []
+        order_by = "ORDER BY p.created_at DESC"
+
+        if filter == "all":
+            order_by = """ORDER BY 
+                CASE p.urgency_tag 
+                    WHEN 'today' THEN 1 
+                    WHEN 'tomorrow' THEN 2 
+                    WHEN 'this_week' THEN 3 
+                    ELSE 4 
+                END, p.created_at DESC"""
+
+        elif filter == "for_me":
+            worker = execute_query(
+                db,
+                "SELECT skills FROM worker_profiles WHERE user_id = %s",
+                (current_user_id,),
+                fetch="one"
+            )
+            if worker and worker["skills"]:
+                filter_conditions = "AND p.task_type = ANY(%s)"
+                filter_params.append(worker["skills"])
+            else:
+                if user["district"]:
+                    filter_conditions = "AND p.district = %s"
+                    filter_params.append(user["district"])
+
+        elif filter == "part_time":
+            filter_conditions = "AND p.job_nature = 'part_time'"
+            order_by = "ORDER BY p.pay_per_person DESC NULLS LAST, p.created_at DESC"
+
+        elif filter == "volunteer":
+            filter_conditions = "AND p.post_category = 'volunteer'"
+            order_by = "ORDER BY p.work_date ASC NULLS LAST, p.created_at DESC"
+
+        elif filter == "no_exp":
+            filter_conditions = "AND p.no_exp_needed = true"
+            order_by = """ORDER BY 
+                CASE p.urgency_tag 
+                    WHEN 'today' THEN 1 
+                    WHEN 'tomorrow' THEN 2 
+                    ELSE 3 
+                END, p.created_at DESC"""
+
+        elif filter == "urgent":
+            filter_conditions = "AND p.urgency_tag IN ('today', 'tomorrow')"
+            order_by = """ORDER BY 
+                CASE p.urgency_tag 
+                    WHEN 'today' THEN 1 
+                    ELSE 2 
+                END, p.created_at DESC"""
+
+        query = f"""
+            SELECT p.*,
+                u.name as poster_name,
+                u.photo_url as poster_photo,
+                u.trust_score as poster_trust_score
+            FROM posts p
+            JOIN users u ON u.id = p.poster_id
+            WHERE {base_conditions} {filter_conditions}
+            {order_by}
+            LIMIT 20
+        """
+
+        posts = execute_query(
+            db,
+            query,
+            base_params + filter_params,
+            fetch="all"
+        )
+
+        return {
+            "posts": FeedService.enrich_posts(posts, user, db),
+            "total": len(posts),
+            "radius_km": radius_km,
+            "filter": filter
+        }
+
+    @staticmethod
+    def enrich_posts(posts, user, db):
+        enriched = []
+        for post in posts:
+            # Get images
+            images = execute_query(
+                db,
+                "SELECT image_url, display_order FROM post_images WHERE post_id = %s ORDER BY display_order",
+                (str(post["id"]),),
+                fetch="all"
+            )
+
+            # Get application count
+            app_count = execute_query(
+                db,
+                "SELECT COUNT(*) as count FROM applications WHERE post_id = %s AND status != 'withdrawn'",
+                (str(post["id"]),),
+                fetch="one"
+            )
+
+            # Get poster ratings
+            worker_rating = execute_query(
+                db,
+                """SELECT ROUND(AVG(stars)::numeric, 1) as avg 
+                   FROM ratings 
+                   WHERE rated_id = %s AND rating_type = 'client_to_worker' AND is_revealed = true""",
+                (str(post["poster_id"]),),
+                fetch="one"
+            )
+            poster_rating = execute_query(
+                db,
+                """SELECT ROUND(AVG(stars)::numeric, 1) as avg 
+                   FROM ratings 
+                   WHERE rated_id = %s AND rating_type = 'worker_to_client' AND is_revealed = true""",
+                (str(post["poster_id"]),),
+                fetch="one"
+            )
+
+            # Distance
+            distance_km = None
+            if (user.get("latitude") and user.get("longitude")
+                    and post.get("latitude") and post.get("longitude")):
+                distance_km = FeedService.calculate_distance_km(
+                    user["latitude"], user["longitude"],
+                    post["latitude"], post["longitude"]
+                )
+
+            enriched.append({
+                "id": str(post["id"]),
+                "poster_id": str(post["poster_id"]),
+                "poster": {
+                    "id": str(post["poster_id"]),
+                    "name": post["poster_name"],
+                    "photo_url": post["poster_photo"],
+                    "worker_rating": float(worker_rating["avg"]) if worker_rating and worker_rating["avg"] else None,
+                    "poster_rating": float(poster_rating["avg"]) if poster_rating and poster_rating["avg"] else None
+                },
+                "title": post["title"],
+                "description": post["description"],
+                "task_type": post["task_type"],
+                "post_category": post["post_category"],
+                "job_nature": post["job_nature"],
+                "workers_needed": post["workers_needed"],
+                "slots_remaining": post["slots_remaining"],
+                "pay_per_person": post["pay_per_person"],
+                "no_exp_needed": post["no_exp_needed"],
+                "urgency_tag": post["urgency_tag"],
+                "status": post["status"],
+                "area_name": post["area_name"],
+                "district": post["district"],
+                "distance_km": distance_km,
+                "work_date": post["work_date"].isoformat() if post["work_date"] else None,
+                "work_time_slot": post["work_time_slot"],
+                "tags": post["tags"] or [],
+                "raw_input_text": post["raw_input_text"],
+                "has_voice_input": post["raw_input_text"] is None and post["ai_generated"],
+                "images": images or [],
+                "applications_count": app_count["count"] if app_count else 0,
+                "suggested_workers": None,
+                "created_at": post["created_at"].isoformat() if post["created_at"] else None,
+                "is_own_post": False
+            })
         return enriched
 
-    # ------------------------------------------------------------------
-    # Private: filter dispatch
-    # ------------------------------------------------------------------
-    def _apply_filter(
-        self, posts: list, filter_name: str, user: User, db: Session, has_gps: bool, current_user_id: str
-    ) -> list:
-        if filter_name == "all":
-            posts.sort(key=lambda p: (urgency_sort_key(p), p.created_at or datetime.min))
-            return posts
-
-        if filter_name == "for_me":
-            worker_profile: Optional[WorkerProfile] = (
-                db.query(WorkerProfile)
-                .filter(WorkerProfile.user_id == current_user_id)
-                .first()
-            )
-            if worker_profile and worker_profile.skills:
-                skills = worker_profile.skills if isinstance(worker_profile.skills, list) else []
-                posts = [p for p in posts if p.task_type in skills]
-            else:
-                # Fallback: same district
-                posts = [p for p in posts if p.district == user.district]
-            posts.sort(key=lambda p: (urgency_sort_key(p), p.created_at or datetime.min))
-            return posts
-
-        if filter_name == "part_time":
-            posts = [p for p in posts if p.job_nature == "part_time"]
-            posts.sort(key=lambda p: (-(p.pay_per_person or 0)))
-            return posts
-
-        if filter_name == "volunteer":
-            posts = [p for p in posts if p.post_category == "volunteer"]
-            posts.sort(key=lambda p: p.work_date or datetime.max.date())
-            return posts
-
-        if filter_name == "no_exp":
-            posts = [p for p in posts if p.no_exp_needed]
-            posts.sort(key=lambda p: (urgency_sort_key(p), p.created_at or datetime.min))
-            return posts
-
-        if filter_name == "urgent":
-            posts = [p for p in posts if p.urgency_tag in ("today", "tomorrow")]
-            posts.sort(key=lambda p: urgency_sort_key(p))
-            return posts
-
-        # Default: same as all
-        posts.sort(key=lambda p: (urgency_sort_key(p), p.created_at or datetime.min))
-        return posts
-
-    # ------------------------------------------------------------------
-    # Private: enrich a single post
-    # ------------------------------------------------------------------
-    def _enrich_post(
-        self,
-        post: Post,
-        db: Session,
-        user_id: str,
-        user_lat: Optional[float],
-        user_lng: Optional[float],
-        is_own: bool,
-    ) -> dict:
-        # Poster info
-        poster = db.query(User).filter(User.id == post.poster_id).first()
-        poster_obj = None
-        if poster:
-            poster_obj = {
-                "id": str(poster.id),
-                "name": poster.name,
-                "photo_url": poster.photo_url,
-            }
-
-        # Ratings (revealed only)
-        worker_ratings = (
-            db.query(Rating)
-            .filter(Rating.ratee_id == post.poster_id, Rating.rating_type == "worker_rating", Rating.is_revealed == True)
-            .all()
-        )
-        poster_ratings = (
-            db.query(Rating)
-            .filter(Rating.ratee_id == post.poster_id, Rating.rating_type == "poster_rating", Rating.is_revealed == True)
-            .all()
-        )
-        worker_avg = (
-            round(sum(r.score for r in worker_ratings) / len(worker_ratings), 1)
-            if worker_ratings else None
-        )
-        poster_avg = (
-            round(sum(r.score for r in poster_ratings) / len(poster_ratings), 1)
-            if poster_ratings else None
+    @staticmethod
+    async def get_active_post(current_user_id, db):
+        user = execute_query(
+            db,
+            "SELECT * FROM users WHERE id = %s",
+            (current_user_id,),
+            fetch="one"
         )
 
-        # Images ordered by display_order
-        images = (
-            db.query(PostImage)
-            .filter(PostImage.post_id == post.id)
-            .order_by(PostImage.display_order.asc())
-            .all()
-        )
-        images_list = [
-            {"id": str(img.id), "image_url": img.image_url, "display_order": img.display_order}
-            for img in images
-        ]
-
-        # Application count (excluding withdrawn)
-        app_count = (
-            db.query(Application)
-            .filter(Application.post_id == post.id, Application.status != "withdrawn")
-            .count()
+        post = execute_query(
+            db,
+            """SELECT p.* FROM posts p 
+               WHERE p.poster_id = %s AND p.status = 'open'
+               ORDER BY p.created_at DESC LIMIT 1""",
+            (current_user_id,),
+            fetch="one"
         )
 
-        # Distance
-        distance_km = None
-        if user_lat is not None and user_lng is not None:
-            post_lat = self._parse_float(post.latitude)
-            post_lng = self._parse_float(post.longitude)
-            if post_lat is not None and post_lng is not None:
-                distance_km = calculate_distance_km(user_lat, user_lng, post_lat, post_lng)
+        if not post:
+            return {"post": None}
+
+        images = execute_query(
+            db,
+            "SELECT image_url, display_order FROM post_images WHERE post_id = %s ORDER BY display_order",
+            (str(post["id"]),),
+            fetch="all"
+        )
+
+        app_count = execute_query(
+            db,
+            "SELECT COUNT(*) as count FROM applications WHERE post_id = %s AND status != 'withdrawn'",
+            (str(post["id"]),),
+            fetch="one"
+        )
+
+        # Get suggested workers
+        suggested = FeedService.get_suggested_workers(post, user, db)
 
         return {
-            "id": str(post.id),
-            "poster_id": str(post.poster_id),
-            "poster": poster_obj,
-            "title": post.title,
-            "description": post.description,
-            "task_type": post.task_type,
-            "post_category": post.post_category,
-            "workers_needed": post.workers_needed,
-            "slots_remaining": post.slots_remaining,
-            "pay_per_person": post.pay_per_person,
-            "no_exp_needed": post.no_exp_needed,
-            "job_nature": post.job_nature,
-            "urgency_tag": post.urgency_tag,
-            "status": post.status,
-            "area_name": post.area_name,
-            "district": post.district,
-            "distance_km": distance_km,
-            "work_date": post.work_date.isoformat() if post.work_date else None,
-            "work_time_slot": post.work_time_slot,
-            "tags": post.tags if isinstance(post.tags, list) else [],
-            "raw_input_text": post.raw_input_text,
-            "has_voice_input": post.has_voice_input,
-            "images": images_list,
-            "applications_count": app_count,
-            "worker_rating_avg": worker_avg,
-            "poster_rating_avg": poster_avg,
-            "suggested_workers": None,  # populated only for is_own_post
-            "created_at": post.created_at.isoformat() if post.created_at else None,
-            "is_own_post": is_own,
+            "post": {
+                "id": str(post["id"]),
+                "poster_id": str(post["poster_id"]),
+                "poster": {
+                    "id": str(user["id"]),
+                    "name": user["name"],
+                    "photo_url": user["photo_url"],
+                    "worker_rating": None,
+                    "poster_rating": None
+                },
+                "title": post["title"],
+                "description": post["description"],
+                "task_type": post["task_type"],
+                "post_category": post["post_category"],
+                "job_nature": post["job_nature"],
+                "workers_needed": post["workers_needed"],
+                "slots_remaining": post["slots_remaining"],
+                "pay_per_person": post["pay_per_person"],
+                "no_exp_needed": post["no_exp_needed"],
+                "urgency_tag": post["urgency_tag"],
+                "status": post["status"],
+                "area_name": post["area_name"],
+                "district": post["district"],
+                "distance_km": 0,
+                "work_date": post["work_date"].isoformat() if post["work_date"] else None,
+                "work_time_slot": post["work_time_slot"],
+                "tags": post["tags"] or [],
+                "raw_input_text": post["raw_input_text"],
+                "has_voice_input": post["raw_input_text"] is None and post["ai_generated"],
+                "images": images or [],
+                "applications_count": app_count["count"] if app_count else 0,
+                "suggested_workers": suggested,
+                "created_at": post["created_at"].isoformat() if post["created_at"] else None,
+                "is_own_post": True
+            }
         }
 
-    # ------------------------------------------------------------------
-    # Private: safe float parse
-    # ------------------------------------------------------------------
     @staticmethod
-    def _parse_float(value) -> Optional[float]:
-        if value is None:
-            return None
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            return None
+    def get_suggested_workers(post, current_user, db):
+        # For jobs with experience needed — match by task_type
+        # For no_exp_needed — show anyone nearby in same district
+        if post["no_exp_needed"]:
+            workers = execute_query(
+                db,
+                """SELECT u.id, u.name, u.photo_url, u.trust_score,
+                          u.latitude, u.longitude
+                   FROM users u
+                   WHERE u.is_worker = true
+                   AND u.is_active = true
+                   AND u.district = %s
+                   AND u.id != %s
+                   ORDER BY u.trust_score DESC
+                   LIMIT 5""",
+                (post["district"], str(current_user["id"])),
+                fetch="all"
+            )
+        else:
+            workers = execute_query(
+                db,
+                """SELECT u.id, u.name, u.photo_url, u.trust_score,
+                          u.latitude, u.longitude
+                   FROM users u
+                   JOIN worker_profiles wp ON wp.user_id = u.id
+                   WHERE u.is_worker = true
+                   AND u.is_active = true
+                   AND u.district = %s
+                   AND u.id != %s
+                   AND %s = ANY(wp.skills)
+                   ORDER BY u.trust_score DESC
+                   LIMIT 5""",
+                (post["district"], str(current_user["id"]), post["task_type"]),
+                fetch="all"
+            )
+
+        result = []
+        for w in (workers or []):
+            distance_km = 0.0
+            if (post.get("latitude") and post.get("longitude")
+                    and w.get("latitude") and w.get("longitude")):
+                distance_km = FeedService.calculate_distance_km(
+                    post["latitude"], post["longitude"],
+                    w["latitude"], w["longitude"]
+                )
+            result.append({
+                "id": str(w["id"]),
+                "name": w["name"],
+                "photo_url": w["photo_url"],
+                "trust_score": w["trust_score"],
+                "trust_score_display": str(w["trust_score"]),
+                "distance_km": distance_km
+            })
+        return result
+
+    @staticmethod
+    async def update_location(body, current_user_id, db):
+        execute_query(
+            db,
+            "UPDATE users SET latitude = %s, longitude = %s, updated_at = %s WHERE id = %s",
+            (body.get("latitude"), body.get("longitude"), datetime.utcnow(), current_user_id)
+        )
+        return {"status": "location updated"}

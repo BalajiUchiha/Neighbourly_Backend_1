@@ -1,14 +1,11 @@
 fastapi
 uvicorn[standard]
-sqlalchemy
 psycopg2-binary
 python-jose[cryptography]
-passlib[bcrypt]
+bcrypt
 httpx
 python-dotenv
 python-multipart
-pydantic[email]
 apscheduler
 google-generativeai
-python-multipart
 pillow

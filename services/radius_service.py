@@ -1,76 +1,75 @@
-import uuid
+from database import execute_query, connection_pool
 from datetime import datetime, timedelta
-from sqlalchemy.orm import Session
-
-from models.post import Post
-from models.application import Application
-from models.radius_expansion import RadiusExpansion
-
+import uuid
 
 class RadiusService:
-    """Background job: expand post search radius for posts with no applicants."""
 
-    async def expand_radii(self, db: Session) -> None:
+    @staticmethod
+    async def expand_radii():
         """
-        For every open post older than 24 h with no applicants and room to expand:
+        Background job: expand post search radius for posts with no applicants.
+        For every open post older than 24h with no applicants and room to expand:
           - Expand current_radius_km by 10 (capped at max_radius_km)
-          - Update last_radius_expanded_at and expansion_count
+          - Update expansion_count
           - If new radius hits max, set is_remote_area = True
           - Log a row in radius_expansions
-        All writes committed in a single transaction.
         """
-        now = datetime.utcnow()
-        cutoff = now - timedelta(hours=24)
+        conn = connection_pool.getconn()
+        try:
+            now = datetime.utcnow()
+            cutoff = now - timedelta(hours=24)
 
-        candidates = (
-            db.query(Post)
-            .filter(
-                Post.status == "open",
-                Post.created_at < cutoff,
-                Post.current_radius_km < Post.max_radius_km,
+            candidates = execute_query(
+                conn,
+                """SELECT * FROM posts 
+                   WHERE status = 'open'
+                   AND created_at < %s
+                   AND current_radius_km < max_radius_km
+                   AND (last_radius_expanded_at IS NULL OR last_radius_expanded_at < %s)""",
+                (cutoff, cutoff),
+                fetch="all"
             )
-            .filter(
-                (Post.last_radius_expanded_at == None) |
-                (Post.last_radius_expanded_at < cutoff)
-            )
-            .all()
-        )
 
-        for post in candidates:
-            # Count active applications (excluding withdrawn)
-            applicant_count = (
-                db.query(Application)
-                .filter(
-                    Application.post_id == post.id,
-                    Application.status != "withdrawn",
+            for post in (candidates or []):
+                # Count active applications
+                app_count = execute_query(
+                    conn,
+                    "SELECT COUNT(*) as count FROM applications WHERE post_id = %s AND status != 'withdrawn'",
+                    (str(post["id"]),),
+                    fetch="one"
                 )
-                .count()
-            )
 
-            # Skip posts that already have applicants
-            if applicant_count > 0:
-                continue
+                if app_count and app_count["count"] > 0:
+                    continue
 
-            old_radius = post.current_radius_km or 0.0
-            new_radius = min(old_radius + 10.0, post.max_radius_km)
+                old_radius = post["current_radius_km"] or 0.0
+                new_radius = min(old_radius + 10.0, post["max_radius_km"])
+                is_remote = new_radius >= post["max_radius_km"]
 
-            # Update post
-            post.current_radius_km = new_radius
-            post.last_radius_expanded_at = now
-            post.expansion_count = (post.expansion_count or 0) + 1
-            if new_radius >= post.max_radius_km:
-                post.is_remote_area = True
-
-            # Log expansion
-            db.add(
-                RadiusExpansion(
-                    id=uuid.uuid4(),
-                    post_id=post.id,
-                    old_radius_km=old_radius,
-                    new_radius_km=new_radius,
-                    applicant_count_at_expansion=applicant_count,
-                    expanded_at=now,
+                # Update post
+                execute_query(
+                    conn,
+                    """UPDATE posts 
+                       SET current_radius_km = %s,
+                           last_radius_expanded_at = %s,
+                           expansion_count = COALESCE(expansion_count, 0) + 1,
+                           is_remote_area = %s
+                       WHERE id = %s""",
+                    (new_radius, now, is_remote, post["id"])
                 )
-            )
 
-        db.commit()
+                # Log expansion
+                execute_query(
+                    conn,
+                    """INSERT INTO radius_expansions 
+                       (id, post_id, old_radius_km, new_radius_km, applicant_count_at_expansion, expanded_at)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (str(uuid.uuid4()), str(post["id"]), old_radius, new_radius, 0, now)
+                )
+
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"[RadiusService] expand_radii error: {e}")
+        finally:
+            connection_pool.putconn(conn)
