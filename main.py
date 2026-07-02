@@ -5,6 +5,12 @@ from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import os
 
+from routes.auth_routes import router as auth_router
+from routes.feed_routes import router as feed_router
+from routes.post_routes import router as post_router
+from routes.location_routes import router as location_router
+from routes.rag_routes import router as rag_router
+
 load_dotenv()
 
 app = FastAPI(title="Neighbourly API")
@@ -20,11 +26,7 @@ app.add_middleware(
 os.makedirs("static/post_images", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-from routes.auth_routes import router as auth_router
-from routes.feed_routes import router as feed_router
-from routes.post_routes import router as post_router
-from routes.location_routes import router as location_router
-
+app.include_router(rag_router, prefix="/api/rag")
 app.include_router(auth_router, prefix="/api/auth")
 app.include_router(feed_router, prefix="/api/feed")
 app.include_router(post_router, prefix="/api/posts")

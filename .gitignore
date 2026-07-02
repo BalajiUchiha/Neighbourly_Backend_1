@@ -2,3 +2,14 @@ venv/
 __pycache__/
 *.pyc
 .env
+
+# IDEs
+.vscode/
+.idea/
+
+# Local Data & Uploads
+chromadb_data/
+static/post_images/
+
+# OS Files
+.DS_Store

@@ -9,3 +9,5 @@ python-multipart
 apscheduler
 google-generativeai
 pillow
+google-genai
+chromadb
