@@ -3,6 +3,7 @@ from google.genai import types
 import json
 import os
 from dotenv import load_dotenv
+from schemas.post import AIRefineResult
 
 load_dotenv()
 
@@ -23,26 +24,9 @@ class AIService:
         client = genai.Client(api_key=api_key)
 
         system_prompt = """You are a post creation assistant for Neighbourly — a hyperlocal job and volunteer platform in India.
+Extract the task details from the user's text into the requested schema structure.
 
-Your job is to extract structured information from a user's raw text or voice transcript describing a task they want to post.
-
-Always respond with ONLY a valid JSON object. No explanation. No markdown. No code blocks. Just raw JSON.
-
-Extract these fields:
-- title: short clear task title (max 8 words)
-- description: clean 1-2 sentence description
-- task_type: one of [farming, lifting, cleaning, driving, cooking, plumbing, electrical, carpentry, event_setup, security, shifting, other]
-- post_category: "paid" if any payment mentioned, "volunteer" if free or community work
-- job_nature: "full_day" if all day, "part_time" if few hours, "one_day" if single day, "ongoing" if multiple days, "helper_needed" if assisting someone
-- urgency_tag: "today" if today/urgent/immediately, "tomorrow" if tomorrow, "this_week" if this week/weekend, "flexible" if no specific time
-- pay_per_person: integer in rupees if mentioned, null if not
-- workers_needed: integer, default 1 if not mentioned
-- no_exp_needed: true if no skill required or anyone can do it, false if skill needed
-- work_date: ISO date string if specific date mentioned, null if not
-- work_time_slot: "morning"/"afternoon"/"evening" if time of day mentioned, null if not
-- area_name: area or locality name if mentioned, null if not
-- tags: array of 2-4 relevant short tags
-- confidence_note: short note in English if anything was unclear or assumed, null if everything was clear"""
+CRITICAL INSTRUCTION: For the description field, DO NOT just copy the user's input. Rewrite it into a very simple, direct, and conversational 1-2 sentence description. Do NOT use overly formal or corporate language (e.g., avoid "seeking reliable individuals", "prompt assistance appreciated"). It should sound like a neighbor asking another neighbor for help."""
 
         # Build user message
         user_message = f"Extract structured post data from this input:\n\n\"{raw_input}\""
@@ -72,18 +56,14 @@ Please re-extract with the correction applied."""
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 response_mime_type="application/json",
+                response_schema=AIRefineResult,
+                temperature=0.1
             )
         )
 
         raw_response = response.text.strip()
 
-        # Clean response — remove any accidental markdown
-        if raw_response.startswith("```"):
-            raw_response = raw_response.split("```")[1]
-            if raw_response.startswith("json"):
-                raw_response = raw_response[4:]
-        
-        raw_response = raw_response.strip()
+        raw_response = response.text.strip()
 
         # === DEBUG LOG ===
         print("\n" + "=" * 60)
