@@ -87,23 +87,23 @@ class VectorService:
         )
     @staticmethod
     def cleanup_after_post_completion(worker_ids: list[str], db):
-     # Called when a post is marked completed
-    # Check if worker is still active on other open posts
-    # Only delete from vector DB if worker has no other open post engagements
+        # Called when a post is marked completed
+        # Check if worker is still active on other open posts
+        # Only delete from vector DB if worker has no other open post engagements
         from database import execute_query
         for worker_id in worker_ids:
-             active_posts = execute_query(
-             db,
-            """SELECT COUNT(*) as count FROM applications a
-               JOIN posts p ON p.id = a.post_id
-               WHERE a.worker_id = %s AND p.status = 'open' AND a.status = 'selected'""",
-            (worker_id,),
-            fetch="one"
-        )
-        if not active_posts or active_posts["count"] == 0:
-            VectorService.delete_worker(worker_id)
-            execute_query(
+            active_posts = execute_query(
                 db,
-                "UPDATE worker_rag_index SET is_dirty = true WHERE worker_id = %s",
-                (worker_id,)
+                """SELECT COUNT(*) as count FROM applications a
+                   JOIN posts p ON p.id = a.post_id
+                   WHERE a.worker_id = %s AND p.status = 'open' AND a.status = 'selected'""",
+                (worker_id,),
+                fetch="one"
             )
+            if not active_posts or active_posts["count"] == 0:
+                VectorService.delete_worker(worker_id)
+                execute_query(
+                    db,
+                    "UPDATE worker_rag_index SET is_dirty = true WHERE worker_id = %s",
+                    (worker_id,)
+                )

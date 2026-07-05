@@ -10,14 +10,17 @@ from routes.feed_routes import router as feed_router
 from routes.post_routes import router as post_router
 from routes.location_routes import router as location_router
 from routes.rag_routes import router as rag_router
+from routes.application_routes import router as application_router
+from routes.user_routes import router as user_router
 
 load_dotenv()
 
 app = FastAPI(title="Neighbourly API")
 
+origins = os.getenv("FRONTEND_URL", "http://localhost:5173").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.getenv("FRONTEND_URL", "*")],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -31,6 +34,8 @@ app.include_router(auth_router, prefix="/api/auth")
 app.include_router(feed_router, prefix="/api/feed")
 app.include_router(post_router, prefix="/api/posts")
 app.include_router(location_router, prefix="/api/location")
+app.include_router(application_router, prefix="/api/applications")
+app.include_router(user_router, prefix="/api/users")
 
 scheduler = AsyncIOScheduler()
 
