@@ -63,8 +63,6 @@ Please re-extract with the correction applied."""
 
         raw_response = response.text.strip()
 
-        raw_response = response.text.strip()
-
         # === DEBUG LOG ===
         print("\n" + "=" * 60)
         print("[AI_SERVICE] === RAW AI RESPONSE ===")
