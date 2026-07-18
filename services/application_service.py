@@ -2,16 +2,8 @@ from database import execute_query
 from fastapi import HTTPException
 from datetime import datetime
 from services.feed_service import FeedService
+from services.notification_service import NotificationService
 import uuid
-
-
-def _insert_notification(db, user_id, type, title, body, reference_type, reference_id):
-    execute_query(db, """
-        INSERT INTO notifications (id, user_id, type, title, body,
-            reference_type, reference_id, is_read, created_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,false,%s)
-    """, (str(uuid.uuid4()), user_id, type, title, body,
-          reference_type, str(reference_id), datetime.utcnow()))
 
 
 class ApplicationService:
@@ -145,12 +137,16 @@ class ApplicationService:
             (application_id, post_id, current_user_id, note, counter_wage, now, now)
         )
 
+        # Get applicant name
+        applicant = execute_query(db, "SELECT name FROM users WHERE id = %s", (current_user_id,), fetch="one")
+        applicant_name = applicant["name"] if applicant else "Someone"
+
         # Notify poster
-        _insert_notification(
+        NotificationService.create(
             db, str(post["poster_id"]),
             "new_applicant",
             "New applicant",
-            f"Someone applied to your post: {post['title']}",
+            f"{applicant_name} applied to your post — {post['title']}",
             "application", application_id
         )
 
@@ -224,11 +220,11 @@ class ApplicationService:
         )
 
         # Notify selected worker
-        _insert_notification(
+        NotificationService.create(
             db, worker_id,
             "application_selected",
-            "You've been hired!",
-            f"You were selected for: {post['title']}",
+            "You've been selected! 🎉",
+            f"You were selected for — {post['title']}. Chat is now open.",
             "application", application_id
         )
 
@@ -241,11 +237,11 @@ class ApplicationService:
             fetch="all"
         )
         for other in (other_applicants or []):
-            _insert_notification(
+            NotificationService.create(
                 db, str(other["worker_id"]),
                 "application_rejected",
-                "Position filled",
-                f"A slot was filled for: {post['title']}",
+                "Not selected this time",
+                f"You were not selected for — {post['title']}. Keep applying!",
                 "application", str(other["id"])
             )
 
@@ -289,11 +285,11 @@ class ApplicationService:
             (str(uuid.uuid4()), str(application["post_id"]), application_id, current_user_id, now)
         )
 
-        _insert_notification(
+        NotificationService.create(
             db, worker_id,
             "application_rejected",
-            "Application not selected",
-            f"You were not selected for: {post['title']}",
+            "Not selected this time",
+            f"You were not selected for — {post['title']}. Keep applying!",
             "application", application_id
         )
 

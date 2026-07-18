@@ -11,3 +11,4 @@ async def reverse_geocode(request: Request):
 @router.get("/districts")
 async def get_districts():
     return await LocationController.get_districts()
+

@@ -11,3 +11,4 @@ google-generativeai
 pillow
 google-genai
 chromadb
+reportlab

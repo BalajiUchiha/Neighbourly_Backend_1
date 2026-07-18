@@ -12,6 +12,10 @@ from routes.location_routes import router as location_router
 from routes.rag_routes import router as rag_router
 from routes.application_routes import router as application_router
 from routes.user_routes import router as user_router
+from routes.chat_routes import router as chat_router
+from routes.rating_routes import router as rating_router
+from routes.profile_routes import router as profile_router
+from routes.notification_routes import router as notification_router
 
 load_dotenv()
 
@@ -36,6 +40,10 @@ app.include_router(post_router, prefix="/api/posts")
 app.include_router(location_router, prefix="/api/location")
 app.include_router(application_router, prefix="/api/applications")
 app.include_router(user_router, prefix="/api/users")
+app.include_router(chat_router, prefix="/api/chats")
+app.include_router(rating_router, prefix="/api/ratings")
+app.include_router(notification_router, prefix="/api/notifications")
+app.include_router(profile_router, prefix="/api/profile")
 
 scheduler = AsyncIOScheduler()
 
