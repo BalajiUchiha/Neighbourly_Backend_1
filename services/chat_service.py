@@ -21,6 +21,25 @@ def _serialize_row(row):
 
 class ChatService:
     @staticmethod
+    async def get_chats(current_user_id: str, db):
+        chats = execute_query(
+            db,
+            """SELECT c.*, p.title as post_title, p.status as post_status,
+                      u.name as other_user_name, u.photo_url as other_user_photo
+               FROM chats c
+               JOIN posts p ON c.post_id = p.id
+               JOIN users u ON u.id = CASE
+                   WHEN c.poster_id::text = %s THEN c.worker_id
+                   ELSE c.poster_id
+               END
+               WHERE c.poster_id::text = %s OR c.worker_id::text = %s
+               ORDER BY c.created_at DESC""",
+            (current_user_id, current_user_id, current_user_id),
+            fetch="all"
+        )
+        return [_serialize_row(chat) for chat in (chats or [])]
+
+    @staticmethod
     async def get_chat(chat_id: str, current_user_id: str, db):
         # Fetch chat
         chat = execute_query(db, "SELECT * FROM chats WHERE id = %s", (chat_id,), fetch="one")

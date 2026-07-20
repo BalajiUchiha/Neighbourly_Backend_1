@@ -13,10 +13,34 @@ connection_pool = psycopg2.pool.SimpleConnectionPool(
 
 def get_db():
     conn = connection_pool.getconn()
+    # Check if connection is dead
+    try:
+        if conn.closed != 0:
+            raise psycopg2.InterfaceError("Connection is closed")
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+    except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError):
+        # Connection is dead, try to get a new one
+        try:
+            connection_pool.putconn(conn, close=True)
+        except Exception:
+            pass
+        conn = connection_pool.getconn()
+    
     try:
         yield conn
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
-        connection_pool.putconn(conn)
+        try:
+            connection_pool.putconn(conn)
+        except Exception:
+            pass
+
 
 def execute_query(conn, query: str, params=None, fetch=None):
     with conn.cursor() as cur:

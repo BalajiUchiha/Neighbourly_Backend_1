@@ -5,6 +5,13 @@ from utils.dependencies import get_current_user
 
 router = APIRouter()
 
+@router.get("")
+async def get_chats(
+    db=Depends(get_db),
+    current_user_id: str = Depends(get_current_user)
+):
+    return await ChatController.get_chats(current_user_id, db)
+
 @router.get("/{chat_id}")
 async def get_chat(
     chat_id: str,

@@ -2,6 +2,10 @@ from services.chat_service import ChatService
 
 class ChatController:
     @staticmethod
+    async def get_chats(current_user_id: str, db):
+        return await ChatService.get_chats(current_user_id, db)
+
+    @staticmethod
     async def get_chat(chat_id: str, current_user_id: str, db):
         return await ChatService.get_chat(chat_id, current_user_id, db)
 

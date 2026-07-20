@@ -2,13 +2,15 @@ fastapi
 uvicorn[standard]
 psycopg2-binary
 python-jose[cryptography]
+passlib[bcrypt]
 bcrypt
 httpx
 python-dotenv
 python-multipart
+anthropic
 apscheduler
 google-generativeai
-pillow
 google-genai
-chromadb
+pillow
 reportlab
+chromadb
