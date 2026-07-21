@@ -480,6 +480,22 @@ class ChatService:
         # Generate Agreement PDF
         pdf_url = PDFService.generate_agreement(updated_chat, post, poster, worker)
         
+        # Save into job_agreements if not exists
+        existing_agr = execute_query(db, "SELECT id FROM job_agreements WHERE chat_id = %s", (chat_id,), fetch="one")
+        if not existing_agr:
+            task_desc = post.get("description") or post.get("title") or ""
+            execute_query(
+                db,
+                """INSERT INTO job_agreements
+                   (id, chat_id, post_id, poster_id, worker_id, agreed_pay,
+                    work_date, work_time_slot, task_description, pdf_url,
+                    generated_at, poster_acknowledged, worker_acknowledged)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,false,false)""",
+                (str(uuid.uuid4()), chat_id, str(updated_chat["post_id"]), poster_id, worker_id,
+                 updated_chat.get("agreed_pay"), updated_chat.get("work_date"),
+                 updated_chat.get("work_time_slot"), task_desc, pdf_url, now)
+            )
+        
         # Update chat with agreement_pdf_url and insert system message
         with db.cursor() as cur:
             cur.execute(
@@ -494,6 +510,73 @@ class ChatService:
             
         db.commit()
         
+        return {"agreement_pdf_url": pdf_url}
+
+    @staticmethod
+    async def generate_agreement(chat_id: str, current_user_id: str, db):
+        chat_row = execute_query(
+            db,
+            """SELECT c.*, p.title, p.description, p.task_type, p.area_name,
+                      poster.name as poster_name,
+                      worker.name as worker_name
+               FROM chats c
+               JOIN posts p ON p.id = c.post_id
+               JOIN users poster ON poster.id = c.poster_id
+               JOIN users worker ON worker.id = c.worker_id
+               WHERE c.id = %s""",
+            (chat_id,),
+            fetch="one"
+        )
+        if not chat_row:
+            raise HTTPException(404, "Chat not found")
+            
+        poster_id = str(chat_row["poster_id"])
+        worker_id = str(chat_row["worker_id"])
+        
+        if current_user_id not in (poster_id, worker_id):
+            raise HTTPException(403, "Not authorized")
+            
+        if not chat_row.get("work_date_confirmed"):
+            raise HTTPException(400, "Work date must be confirmed before generating agreement")
+            
+        # Check if agreement already exists
+        existing = execute_query(
+            db,
+            "SELECT pdf_url FROM job_agreements WHERE chat_id = %s",
+            (chat_id,),
+            fetch="one"
+        )
+        if existing and existing.get("pdf_url"):
+            return {"agreement_pdf_url": existing["pdf_url"]}
+
+        post_id = str(chat_row["post_id"])
+        post = execute_query(db, "SELECT * FROM posts WHERE id = %s", (post_id,), fetch="one")
+        poster = execute_query(db, "SELECT * FROM users WHERE id = %s", (poster_id,), fetch="one")
+        worker = execute_query(db, "SELECT * FROM users WHERE id = %s", (worker_id,), fetch="one")
+
+        pdf_url = PDFService.generate_agreement(chat_row, post, poster, worker)
+        now = datetime.utcnow()
+        agreement_id = str(uuid.uuid4())
+        task_desc = chat_row.get("description") or chat_row.get("title") or ""
+
+        execute_query(
+            db,
+            """INSERT INTO job_agreements
+               (id, chat_id, post_id, poster_id, worker_id, agreed_pay,
+                work_date, work_time_slot, task_description, pdf_url,
+                generated_at, poster_acknowledged, worker_acknowledged)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,false,false)""",
+            (agreement_id, chat_id, post_id, poster_id, worker_id,
+             chat_row.get("agreed_pay"), chat_row.get("work_date"),
+             chat_row.get("work_time_slot"), task_desc, pdf_url, now)
+        )
+
+        execute_query(
+            db,
+            "UPDATE chats SET agreement_pdf_url = %s WHERE id = %s",
+            (pdf_url, chat_id)
+        )
+
         return {"agreement_pdf_url": pdf_url}
 
     @staticmethod

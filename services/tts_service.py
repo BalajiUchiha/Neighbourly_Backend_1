@@ -58,12 +58,11 @@ class TTSService:
 
     @staticmethod
     def build_subtitle_schedule(text: str, audio_url: str) -> list:
-        # Split text into chunks of ~8 words
-        # Estimate timing — average speaking rate ~150 words per minute
+        # Split text into small natural chunks of ~4 words
         words = text.split()
         chunks = []
-        chunk_size = 8
-        words_per_second = 2.5
+        chunk_size = 4
+        words_per_second = 2.0
 
         current_time = 0
         for i in range(0, len(words), chunk_size):

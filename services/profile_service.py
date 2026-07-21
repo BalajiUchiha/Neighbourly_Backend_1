@@ -123,6 +123,111 @@ class ProfileService:
         return {"posts": [_serialize_row(p) for p in posts]}
 
     @staticmethod
+    async def get_my_agreements(current_user_id: str, db):
+        agreements = execute_query(
+            db,
+            """SELECT ja.*,
+                      CASE
+                          WHEN ja.poster_id = %s THEN w.name
+                          ELSE p.name
+                      END as other_party_name,
+                      post.title as post_title
+               FROM job_agreements ja
+               JOIN posts post ON post.id = ja.post_id
+               JOIN users p ON p.id = ja.poster_id
+               JOIN users w ON w.id = ja.worker_id
+               WHERE ja.poster_id = %s OR ja.worker_id = %s
+               ORDER BY ja.generated_at DESC""",
+            (current_user_id, current_user_id, current_user_id),
+            fetch="all"
+        ) or []
+        
+        return {
+            "agreements": [_serialize_row(a) for a in agreements]
+        }
+
+    @staticmethod
+    async def get_public_profile(user_id: str, db) -> dict:
+        user = execute_query(
+            db,
+            """SELECT id, name, username, photo_url, trust_score,
+                      trust_badge, area_name, district, is_worker,
+                      created_at
+               FROM users WHERE id = %s AND is_active = true""",
+            (user_id,),
+            fetch="one"
+        )
+        if not user:
+            raise HTTPException(404, "User not found")
+
+        worker_profile = None
+        if user["is_worker"]:
+            wp = execute_query(
+                db,
+                "SELECT skills, wage_min, wage_max, availability_slots FROM worker_profiles WHERE user_id = %s",
+                (user_id,),
+                fetch="one"
+            )
+            if wp:
+                worker_profile = _serialize_row(wp)
+
+        # Stats
+        jobs = execute_query(
+            db,
+            "SELECT COUNT(*) as count FROM applications a JOIN posts p ON p.id = a.post_id WHERE a.worker_id = %s AND p.status = 'completed'",
+            (user_id,),
+            fetch="one"
+        )
+        avg = execute_query(
+            db,
+            "SELECT ROUND(AVG(stars)::numeric,1) as avg FROM ratings WHERE rated_id = %s AND is_revealed = true",
+            (user_id,),
+            fetch="one"
+        )
+
+        # Revealed reviews only
+        reviews = execute_query(
+            db,
+            """SELECT r.stars, r.review_text, r.revealed_at,
+                      p.title as post_title, u.name as reviewer_name,
+                      u.photo_url as reviewer_photo
+               FROM ratings r
+               JOIN posts p ON p.id = r.post_id
+               JOIN users u ON u.id = r.rater_id
+               WHERE r.rated_id = %s AND r.is_revealed = true
+               ORDER BY r.revealed_at DESC
+               LIMIT 10""",
+            (user_id,),
+            fetch="all"
+        )
+
+        return {
+            "user": {
+                "id": str(user["id"]),
+                "name": user["name"],
+                "username": user["username"],
+                "photo_url": user["photo_url"],
+                "trust_score": user["trust_score"],
+                "trust_badge": user["trust_badge"],
+                "area_name": user["area_name"],
+                "district": user["district"],
+                "is_worker": user["is_worker"],
+                "created_at": user["created_at"].isoformat() if user.get("created_at") else None
+            },
+            "worker_profile": worker_profile,
+            "stats": {
+                "jobs_completed": jobs["count"] if jobs else 0,
+                "avg_rating": float(avg["avg"]) if avg and avg["avg"] is not None else None
+            },
+            "reviews": [
+                {
+                    **_serialize_row(r)
+                }
+                for r in (reviews or [])
+            ]
+        }
+
+    @staticmethod
     async def update_profile(current_user_id: str, body: dict, db):
         allowed = ['name', 'photo_url', 'preferred_language', 'phone', 'email']
         updates = {k: v for k, v in body.items() if k in allowed and v is not None}

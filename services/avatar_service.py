@@ -19,18 +19,24 @@ class AvatarService:
 
     @staticmethod
     def detect_smart_action(screen_context: str, selected_content: str) -> dict:
-        # Detect context to suggest smart action
-        if 'post' in screen_context and any(
-            w in selected_content.lower()
-            for w in ['₹', 'pay', 'worker', 'needed', 'apply']
-        ):
-            return SMART_ACTION_TRIGGERS["job"]
-        if 'chat' in screen_context:
-            if any(w in selected_content.lower() for w in ['offer', 'bargain', 'amount']):
+        ctx = (screen_context or '').lower()
+        content = (selected_content or '').lower()
+
+        # Chat or bargain screen:
+        if 'chat' in ctx or 'bargain' in ctx:
+            if any(w in content for w in ['offer', 'bargain', 'amount', 'counter', 'pay', '₹', 'price', 'rate']):
                 return SMART_ACTION_TRIGGERS["bargain"]
             return SMART_ACTION_TRIGGERS["message"]
-        if 'ask-worker' in screen_context:
+
+        # Profile or worker view:
+        if 'profile' in ctx or 'ask-worker' in ctx or 'applicant' in ctx:
             return SMART_ACTION_TRIGGERS["worker"]
+
+        # Home, explore, or post detail screen (strictly non-chat):
+        if ('home' in ctx or 'explore' in ctx or ('post' in ctx and 'chat' not in ctx)):
+            if any(w in content for w in ['₹', 'pay', 'worker', 'needed', 'apply', 'job', 'work']):
+                return SMART_ACTION_TRIGGERS["job"]
+
         return None
 
     @staticmethod
@@ -40,7 +46,8 @@ class AvatarService:
         language: str,
         session_id: str,
         current_user_id: str,
-        db
+        db,
+        specific_question: str = None
     ) -> dict:
 
         # Check/deduct credits
@@ -109,25 +116,47 @@ class AvatarService:
         }
         lang_name = language_names.get(language, "English")
 
-        prompt = f"""You are Nova, a friendly AI assistant for Neighbourly — a hyperlocal job platform in India.
+        base_context = f"""You are Monica✨, a friendly AI assistant for Neighbourly — a hyperlocal job platform in India.
 
-The user has selected this content from the app screen:
+The user has circled/selected this content from the app screen:
 "{selected_content}"
 
-Screen context: {screen_context}
+Screen context: {screen_context}"""
 
-Explain this content in simple, friendly {lang_name} language. 
-- Maximum 3 short sentences
-- Use simple words a daily wage worker would understand
-- Be warm and helpful like a friend
-- If it's a job post, explain what the job is, how much it pays, and what to do
-- If it's a message, explain what the other person is saying
-- If it's a rating or trust score, explain what it means
-- Respond ONLY in {lang_name}
-- Do not include any markdown or formatting"""
+        if specific_question:
+            prompt = base_context + f"""
+
+The user has asked this specific question about the circled content:
+"{specific_question}"
+
+Please provide a response in simple, friendly {lang_name} language following this exact structure:
+1. First, explain what the circled content actually is/means so the user understands the context.
+2. Next, answer their specific question directly using the details from the circled content and screen context.
+
+Keep the total explanation to a maximum of 3-4 short, simple sentences. Use clear words a daily wage worker would understand.
+Respond ONLY in {lang_name}. Do not include markdown or formatting."""
+        else:
+            prompt = base_context + f"""
+
+Explain what the circled content is and what to do simply in {lang_name}. Maximum 3 sentences."""
 
         response = model.generate_content(prompt)
         explanation_text = response.text.strip()
+
+        # Generate chat reply if in chat or bargain screen context
+        chat_reply = None
+        if 'chat' in screen_context or 'bargain' in screen_context:
+            reply_model = genai.GenerativeModel("gemini-2.5-flash")
+            reply_prompt = f"""The user is in a chat/bargain screen.
+    
+Content they circled: "{selected_content}"
+User's question: "{specific_question or 'How should I respond?'}"
+
+Generate a short, natural reply message the user can send.
+Reply in {lang_name}. Maximum 2 sentences. Just the reply text, nothing else."""
+            
+            reply_response = reply_model.generate_content(reply_prompt)
+            chat_reply = reply_response.text.strip()
 
         # Generate audio via Google TTS
         audio_url = TTSService.generate_audio(explanation_text, language)
@@ -179,21 +208,47 @@ Explain this content in simple, friendly {lang_name} language.
             "audio_url": audio_url,
             "subtitle_schedule": subtitle_schedule,
             "smart_action": smart_action,
+            "chat_reply": chat_reply,
             "credits_remaining": updated["total"] if updated else 0
         }
+
+    @staticmethod
+    async def reprocess_reply(original_reply: str, session_id: str, language: str) -> dict:
+        model = genai.GenerativeModel("gemini-2.5-flash")
+
+        lang_names = {
+            "tamil": "Tamil", "hindi": "Hindi", "english": "English",
+            "telugu": "Telugu", "kannada": "Kannada", "malayalam": "Malayalam"
+        }
+        lang = lang_names.get(language, "English")
+
+        prompt = f"""Make this chat message more professional and polite while keeping the same meaning.
+
+Original: "{original_reply}"
+
+Rewrite in {lang}. Keep it natural and conversational. Maximum 2 sentences. Just the rewritten message."""
+
+        response = model.generate_content(prompt)
+        return {"reply": response.text.strip()}
 
     @staticmethod
     async def get_pre_written_audio(audio_type: str, language: str) -> dict:
         PRE_WRITTEN_SCRIPTS = {
             "greeting": {
-                "tamil": "வணக்கம்! நான் நோவா. நீங்கள் புரிய வேண்டிய விஷயத்தை வட்டமிடுங்கள்.",
-                "hindi": "नमस्ते! मैं Nova हूं। जो समझना हो उसे घेर लीजिए।",
-                "english": "Hi! I am Nova. Draw a circle around what you need help with."
+                "tamil": "வணக்கம்! நான் மோனிகா. நீங்கள் புரிய வேண்டிய விஷயத்தை வட்டமிடுங்கள்.",
+                "hindi": "नमस्ते! मैं Monica हूं। जो समझना हो उसे घेर लीजिए।",
+                "english": "Hi! I am Monica. Draw a circle around what you need help with.",
+                "telugu": "హలో! నేను మోనికా. మీకు సహాయం కావాల్సిన దాన్ని సర్కిల్ చేయండి.",
+                "kannada": "ಹಲೋ! ನಾನು ಮೋನಿಕಾ. ನಿಮಗೆ ಸಹಾಯ ಬೇಕಾದುದನ್ನು ಸರ್ಕಲ್ ಮಾಡಿ.",
+                "malayalam": "ഹലോ! ഞാൻ മോനിക്ക. സഹായം വേണ്ടത് വട്ടമിടുക."
             },
             "confirming": {
-                "tamil": "இதுவா நீங்கள் புரிந்துகொள்ள விரும்புவது?",
-                "hindi": "क्या यही है जो आप समझना चाहते हैं?",
-                "english": "Is this what you want me to explain?"
+                "tamil": "இதுவா உங்களுக்கு வேண்டும்? 'இதை எப்படி செய்வது?' போன்ற கேள்விகள் இருந்தால் கீழே டைப் செய்யவும்.",
+                "hindi": "क्या आपको यह चाहिए? अगर कोई सवाल है जैसे 'आवेदन कैसे करें?', तो नीचे टाइप करें।",
+                "english": "Is this what you need help with? If you have specific questions like 'How to apply?', type or select below.",
+                "telugu": "దీనికి సహాయం కావాలా? 'ఎలా అప్లై చేయాలి?' వంటి ప్రశ్నలు ఉంటే కింద ఎంచుకోండి.",
+                "kannada": "ಇದಕ್ಕೆ ಸಹಾಯ ಬೇಕೇ? 'ಹೇಗೆ ಅರ್ಜಿ ಸಲ್ಲಿಸುವುದು?' ಎಂಬ ಪ್ರಶ್ನೆಗಳಿದ್ದರೆ ಕೆಳಗೆ ಟೈಪ್ ಮಾಡಿ.",
+                "malayalam": "ഇതാണോ സഹായം വേണ്ടത്? 'എങ്ങനെ അപേക്ഷിക്കാം?' എന്ന ചോദ്യങ്ങൾ ഉണ്ടെങ്കിൽ താഴെ ടൈപ്പ് ചെയ്യുക."
             }
         }
 

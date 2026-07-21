@@ -34,6 +34,10 @@ class ChatController:
         return await ChatService.confirm_date(chat_id, current_user_id, body, db)
 
     @staticmethod
+    async def generate_agreement(chat_id: str, current_user_id: str, db):
+        return await ChatService.generate_agreement(chat_id, current_user_id, db)
+
+    @staticmethod
     async def complete_chat(chat_id: str, current_user_id: str, db):
         return await ChatService.complete_chat(chat_id, current_user_id, db)
 

@@ -10,6 +10,14 @@ class ProfileController:
         return await ProfileService.get_my_posts(current_user_id, db)
 
     @staticmethod
+    async def get_my_agreements(current_user_id: str, db):
+        return await ProfileService.get_my_agreements(current_user_id, db)
+
+    @staticmethod
+    async def get_public_profile(user_id: str, db):
+        return await ProfileService.get_public_profile(user_id, db)
+
+    @staticmethod
     async def update_profile(current_user_id: str, body: dict, db):
         return await ProfileService.update_profile(current_user_id, body, db)
 

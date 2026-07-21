@@ -10,11 +10,21 @@ class AvatarController:
             raise HTTPException(400, "selected_content is required")
         return await AvatarService.explain(
             selected_content=body.get("selected_content"),
+            specific_question=body.get("specific_question"),
             screen_context=body.get("screen_context", "/home"),
             language=body.get("language", "english"),
             session_id=body.get("session_id"),
             current_user_id=current_user_id,
             db=db
+        )
+
+    @staticmethod
+    async def reprocess_reply(request, current_user_id, db):
+        body = await request.json()
+        return await AvatarService.reprocess_reply(
+            original_reply=body.get("original_reply", ""),
+            session_id=body.get("session_id"),
+            language=body.get("language", "english")
         )
 
     @staticmethod

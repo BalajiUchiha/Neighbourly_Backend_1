@@ -68,6 +68,14 @@ async def confirm_date(
     body = await request.json()
     return await ChatController.confirm_date(chat_id, current_user_id, body, db)
 
+@router.post("/{chat_id}/generate-agreement")
+async def generate_agreement(
+    chat_id: str,
+    db=Depends(get_db),
+    current_user_id: str = Depends(get_current_user)
+):
+    return await ChatController.generate_agreement(chat_id, current_user_id, db)
+
 @router.post("/{chat_id}/complete")
 async def complete_chat(
     chat_id: str,

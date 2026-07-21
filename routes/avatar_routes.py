@@ -13,6 +13,14 @@ async def explain(
 ):
     return await AvatarController.explain(request, current_user_id, db)
 
+@router.post("/reprocess-reply")
+async def reprocess_reply(
+    request: Request,
+    db=Depends(get_db),
+    current_user_id: str = Depends(get_current_user)
+):
+    return await AvatarController.reprocess_reply(request, current_user_id, db)
+
 @router.get("/audio")
 async def get_audio(
     type: str = Query(...),
